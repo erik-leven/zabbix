@@ -24,9 +24,6 @@ zabbix_ip = os.environ.get("ZABBIX_IP")
 
 user = os.environ.get("USER")
 password = os.environ.get("PASSWORD")
-item_name = os.environ.get("ITEM_NAME")
-item_key_ = os.environ.get("ITEM_KEY_") 
-item_key = os.environ.get("ITEM_KEY")
 host_name = os.environ.get("HOST_NAME")
 
 
@@ -37,28 +34,39 @@ def main():
     notifications = get_notifications(sesam_jwt)
     host_data = create_host_data(token, host_name)
     host_id = get_host_id(host_data)
+    # getting node status from /health API
+    node_value = get_node_health()
+    node_item_data = create_item_data(token, "node-health", "node-health", host_id)
+    create_item(node_item_data)
+    push_data("node-health", node_value)
+
     for notification in notifications:
         if notification['_deleted'] == True:
-            logger.info("Skipping pipe {}".format(notification['pipe_id']))
             continue
         try:
             item_name = notification['pipe_id']
             req = get_extended_notification(notification['pipe_id'])
         except KeyError:
             item_name = "node-health"
-            req = None
+            continue
         value = find_value(notification['status'], item_name, req)
-        item_key  = item_name
-        item_data = create_item_data(token, item_name, item_key, host_id) 
+        item_data = create_item_data(token, item_name, item_name, host_id) 
+        print(item_data)
         create_item(item_data)
-        push_data(notification, item_key, value)
+        push_data(item_name, value)
     return jsonify(notifications)
+
+def get_node_health():
+    req = requests.get(url="https://sesam.bouvet.no/api/health".format(subscription), headers={'Authorization': 'bearer {}'.format(sesam_jwt)}, verify=False).json()
+    if req["status"] == "ok":
+        return 1
+    else:
+        logger.error("Unexpected response status code: %d with response text %s" % (req.status_code, req.text))
+        return 4
 
 def find_value(status, item_name, notification = None):
     if status == "ok":
         return 1
-    if item_name == "node-health":
-        return 4
     if notification['name'] == "Read errors time":
         return 2
     if notification['name'] == "Write errors time":
@@ -73,12 +81,8 @@ def get_extended_notification(pipe_name):
             raise AssertionError("Unexpected response status code: %d with response text %s" % (req.status_code, req.text))
     return req.json()[0]
 
-def push_data(notification, item_key, value):
-    logger.info('zabbix_sender -z {} -s "{}" -k {} -o {}'.format(zabbix_ip, host_name, item_key, value))
-    if notification['status'] == "ok":
-        os.system('zabbix_sender -z {} -s "{}" -k {} -o {}'.format(zabbix_ip, host_name, item_key, value))
-    else:
-        os.system('zabbix_sender -z {} -s "{}" -k {} -o {}'.format(zabbix_ip, host_name, item_key, value))
+def push_data(item_key, value):
+    os.system('zabbix_sender -z {} -s "{}" -k {} -o {}'.format(zabbix_ip, host_name, item_key, value))
 
 def get_host_id(host_data):
     req = requests.get(url= "http://" + zabbix_server + "/zabbix/api_jsonrpc.php", data=json.dumps(host_data),headers={'Content-Type':'application/json'})
